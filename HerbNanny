@@ -1,0 +1,114 @@
+#!/bin/bash
+
+gpio_path=/sys/class/gpio
+
+
+#Pins used
+pump=22
+waterLevelOutput=23
+waterLevelInput=24
+calibrateBtn=10
+powerBtn=9
+light=25
+lowWaterLed=11
+lowNutritionLed=8
+
+
+
+
+#pins need to be exported before use.
+export(){
+        if [ ! -e $gpio_path/gpio$1 ]; then
+        echo "$1" > $gpio_path/export
+        fi
+}
+
+#Set a pins state to either "out" or "in"
+setPinState(){
+        echo "$2" > $gpio_path/gpio$1/direction
+}
+
+#turns a output pin on/off input: 1/0
+write(){
+        export $1
+        setPinState $1 out
+        echo "$2" > $gpio_path/gpio$1/value
+}
+
+#reads from a input pin
+read(){
+        export $1
+        setPinState $1 in
+        readValue=$(cat $gpio_path/gpio$1/value)
+}
+
+#Returns a value proportionate to resistance of a read value (measuring discharge time of a capacitor)
+analogRead(){
+        write $2 1
+        startTime=$(date +%s%3N)
+        local timeout=10000
+        read $1
+        #wait for capacitor to charge
+        while [ $readValue == 0 ]
+        do
+                read $1
+                echo "Charging capacitor.."
+                if [ $(($(date +%s%3N)-$startTime)) -gt $timeout ]; then
+                        break
+                fi
+        done
+        write $2 0
+        timeUsed=$(($(date +%s%3N)-$startTime))
+        readAnalogValue=$timeUsed
+        echo $readAnalogValue
+}
+
+#reads saltLevelInput and writes output to calibrateValue
+readWaterLevel(){
+        analogRead $waterLevelInput $waterLevelOutput
+        waterLevel=$readAnalogValue
+        echo $readAnalogValue > waterLevel
+}
+
+#init
+lowWater=0
+onOff=1
+write $light 1
+write $lowWaterLed 0
+write $lowNutritionLed 0
+write $pump 1
+
+#main loop
+while [ 1 ]
+do
+        #power button Listener
+        read $powerBtn
+        if [ $readValue -gt 0 ]; then
+                echo "onOff"
+                if [ $onOff -gt 0 ]; then
+                        onOff=0
+                write $light 0
+                write $pump 0
+                write $lowWaterLed 0
+                lowWater=0
+                else
+                        onOff=1
+                write $light 1
+                write $pump 1
+                lowWater=0
+                fi
+                sleep 0.5
+
+        fi
+        #Check if there is enough water
+        #todo: only check every hour
+        if [ $lowWater -lt 1 ] && [ $onOff -gt 0 ]; then
+                readWaterLevel
+                if [ $waterLevel -gt 5000 ]; then
+                        write $lowWaterLed 1
+                        lowWater=1
+                fi
+        fi
+
+done
+exit 0
